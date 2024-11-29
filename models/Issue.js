@@ -30,6 +30,7 @@ const Issue = sequelize.define('Issue', {
     defaultValue:false
   }
   
+  
 });
 
 module.exports = Issue;

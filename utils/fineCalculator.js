@@ -24,11 +24,11 @@ const calculateFine = async (issueTime, returnTime) => {
   let fine = 0;
 
   if (timeDifferenceInMinutes <= 25) {
-    fine = (timeDifferenceInMinutes - 20) * 5;
+    fine = (timeDifferenceInMinutes - 20) + 5;
   } else if (timeDifferenceInMinutes <= 40) {
-    fine = 5 * 5 + (timeDifferenceInMinutes - 25) * 10;
+    fine = 5 * 5 + (timeDifferenceInMinutes - 25) + 10;
   } else {
-    fine = 5 * 5 + 15 * 10 + (timeDifferenceInMinutes - 40) * 100;
+    fine = 5 * 5 + 15 * 10 + (timeDifferenceInMinutes - 40) + 100;
   }
 
   console.log("Calculated fine:", fine);
