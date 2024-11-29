@@ -11,12 +11,10 @@ const issueBook = async (req, res) => {
       User.findByPk(userId),
       Book.findByPk(bookModelId),
     ]);
-
     // Validate user and book existence
     if (!user || !book) {
       return res.status(400).json({ message: "User or Book not found" });
     }
-
     // Check if user has exceeded the maximum issued books limit
     const [issuedBooksCount, fineAppliedBook, alreadyIssued] =
       await Promise.all([
@@ -34,24 +32,20 @@ const issueBook = async (req, res) => {
         message: "User has already issued the maximum number of books",
       });
     }
-
     if (fineAppliedBook) {
       return res.status(400).json({
         message: "User cannot issue another book with fine applied",
       });
     }
-
     if (alreadyIssued) {
       return res
         .status(400)
         .json({ message: "User has already issued this book" });
     }
-
     // Check book availability
     if (book.quantity <= 0) {
       return res.status(400).json({ message: "Book is out of stock" });
     }
-
     // Create the issue record and decrement book quantity
     const issue = await Issue.create({
       UserId: user.id,
@@ -60,7 +54,6 @@ const issueBook = async (req, res) => {
       issueTime: new Date(),
     });
     await book.decrement("quantity");
-
     // Fetch updated issued books details with associations
     const issuedBooksDetails = await Issue.findAll({
       where: { UserId: user.id },
@@ -69,7 +62,6 @@ const issueBook = async (req, res) => {
         { model: User, attributes: ["name"] },
       ],
     });
-
     // Cache issued books details in Redis
     await client.set(
       `user:${userId}`,
@@ -77,7 +69,6 @@ const issueBook = async (req, res) => {
       "EX",
       3600 // Expiration time in seconds
     );
-
     res.status(200).json({
       message: "Book issued successfully",
       issuedBooksDetails,
@@ -89,14 +80,11 @@ const issueBook = async (req, res) => {
       .json({ message: "Error issuing book", error: error.message });
   }
 };
-
 const returnBook = async (req, res) => {
   const { issueId } = req.body;
-
   if (!issueId) {
     return res.status(400).json({ message: "Issue ID is required" });
   }
-
   try {
     // Fetch the issue record with associated user and book details
     const issue = await Issue.findByPk(issueId, {
@@ -105,18 +93,15 @@ const returnBook = async (req, res) => {
         { model: Book, attributes: ["id", "name"] },
       ],
     });
-
     // Validate the issue record and associated details
     if (!issue) {
       return res.status(404).json({ message: "Issue record not found" });
     }
-
     if (!issue.Book) {
       return res
         .status(400)
         .json({ message: "Book details are missing in the issue record" });
     }
-
     if (issue.returnTime) {
       return res
         .status(400)
@@ -126,22 +111,32 @@ const returnBook = async (req, res) => {
     const fine = await calculateFine(issue.issueTime, new Date());
     await issue.update({ fine: fine });
 
-    if (fine > 0 && !issue.finePaid) {
+    if (issue.fine>0 && !issue.finePaid) {
       return res.status(400).json({
         message:
           "Outstanding fine detected. Please clear the fine before returning the book.",
         fine,
       });
     }
+    if (issue.finePaid) {
+      const payment = await FinePayment.findOne({
+        where: { IssueId: issue.id},
+      });
+      console.log("amountpaisd::::::::::", payment);
+      const diff = issue.fine - payment.amountPaid;
+      
+      await issue.update({fine:diff});
+      if (diff > 1) {
+        return res.status(400).json({ message: "Still some fine pending" , diff});
+      }
+    }
 
     // Update book quantity
     const book = issue.Book; // Book already fetched in `issue`
     await book.increment("quantity");
-
     // Update issue record and clean up if necessary
     // await issue.update({ returnTime: new Date(), fine: 0 });
     await issue.destroy({ where: issueId }); // Removes the issue record
-
     // Update cache
     const cacheKey = `user:${issue.UserId}`;
     const activeIssues = await Issue.findAll({
@@ -151,13 +146,11 @@ const returnBook = async (req, res) => {
         { model: Book, attributes: ["name"] },
       ],
     });
-
     if (activeIssues.length > 0) {
       await client.set(cacheKey, JSON.stringify(activeIssues), "EX", 3600); // Update cache
     } else {
       await client.del(cacheKey); // Clear cache if no active issues
     }
-
     // Respond with success message
     res.status(200).json({
       message: "Book returned successfully",
@@ -171,7 +164,6 @@ const returnBook = async (req, res) => {
     });
   }
 };
-
 const getUserIssuedBooks = async (req, res) => {
   const { userId } = req.params;
 
@@ -217,7 +209,6 @@ const getUserIssuedBooks = async (req, res) => {
       .json({ message: "Error fetching issued books", error: error.message });
   }
 };
-
 const payFine = async (req, res) => {
   const { issueId } = req.body;
 
@@ -227,7 +218,6 @@ const payFine = async (req, res) => {
 
   try {
     const issue = await Issue.findByPk(issueId);
-
     if (!issue) {
       return res.status(400).json({ message: "Issue record not found" });
     }
@@ -238,20 +228,36 @@ const payFine = async (req, res) => {
         .json({ message: "No fine to be paid for this issue" });
     }
 
-    if (issue.finePaid) {
-      return res.status(400).json({ message: "Fine has already been paid" });
-    }
-
-    const finecalc = await calculateFine(issue.issueTime, new Date());
-
-    await issue.update({ fine: finecalc });
-
-    const finePayment = await FinePayment.create({
-      IssueId: issueId,
-      amountPaid: issue.fine,
+    // Calculate the fine
+    const newFine = await calculateFine(issue.issueTime, new Date());
+    let finePayment = await FinePayment.findOne({
+      where: { IssueId: issue.id },
     });
 
-    await issue.update({ finePaid: true });
+    if (finePayment) {
+      // Calculate the difference
+      const diff = newFine - finePayment.amountPaid;
+      let finalAmountPaid = finePayment.amountPaid;
+
+      if (diff > 0) {
+        finalAmountPaid += diff; // Add the difference
+      }
+
+      // Update the payment record
+      await finePayment.update({
+        amountPaid: finalAmountPaid,
+        updatedAt: new Date(),
+      });
+    } else {
+      // Create a new payment record
+      finePayment = await FinePayment.create({
+        IssueId: issueId,
+        amountPaid: newFine,
+      });
+    }
+
+    // Update the issue to mark the fine as paid and reset the fine amount
+    await issue.update({ finePaid: true, fine: 0 });
 
     res.status(200).json({
       message: "Fine paid successfully",
@@ -259,11 +265,11 @@ const payFine = async (req, res) => {
     });
   } catch (error) {
     console.error("Error in payFine:", error);
-    res
-      .status(500)
-      .json({ message: "Error paying fine", error: error.message });
+    res.status(500).json({ message: "Error paying fine", error: error.message });
   }
 };
+
+
 const calFine = async (req, res) => {
   const { issueId } = req.body;
   if (!issueId) {
